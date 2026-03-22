@@ -38,7 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_prices_fetched ON prices(fetched_at);
 def init_db(db_path: str | None = None) -> sqlite3.Connection:
     path = db_path or settings.db_path
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_DDL)
