@@ -122,7 +122,7 @@ for ft in ["B7", "E10"]:
             "price_updated_at": "Last Updated",
         }
     )
-    styled = display.style.applymap(highlight_price, subset=["Price (ppl)"])
+    styled = display.style.map(highlight_price, subset=["Price (ppl)"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 # ---- Price history ----
