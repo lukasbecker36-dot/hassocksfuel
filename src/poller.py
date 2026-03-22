@@ -9,6 +9,7 @@ import schedule
 from src import settings
 from src.api_client import FuelFinderClient
 from src.db import get_tracked_stations, init_db, insert_prices_bulk, upsert_stations_bulk
+from src.turso_db import TursoDB
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,7 +18,11 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def poll_once(client: FuelFinderClient, conn: sqlite3.Connection) -> None:
+def poll_once(
+    client: FuelFinderClient,
+    conn: sqlite3.Connection,
+    turso: TursoDB | None = None,
+) -> None:
     try:
         stations = get_tracked_stations(conn)
         if not stations:
@@ -27,11 +32,17 @@ def poll_once(client: FuelFinderClient, conn: sqlite3.Connection) -> None:
                 log.warning("No stations found within %.1f miles", settings.radius_miles)
                 return
             upsert_stations_bulk(conn, stations)
+            if turso:
+                turso.upsert_stations_bulk(stations)
             log.info("Discovered %d stations", len(stations))
 
         station_ids = {s.station_id for s in stations}
         records = client.fetch_all_prices_bulk(tracked_station_ids=station_ids)
         new_count = insert_prices_bulk(conn, records)
+
+        if turso and records:
+            turso.insert_prices_bulk(records)
+
         log.info(
             "Poll complete: %d stations, %d price records fetched, %d new prices stored",
             len(stations),
@@ -42,11 +53,17 @@ def poll_once(client: FuelFinderClient, conn: sqlite3.Connection) -> None:
         log.exception("Poll failed")
 
 
-def refresh_stations(client: FuelFinderClient, conn: sqlite3.Connection) -> None:
+def refresh_stations(
+    client: FuelFinderClient,
+    conn: sqlite3.Connection,
+    turso: TursoDB | None = None,
+) -> None:
     try:
         stations = client.fetch_stations_near_hassocks()
         if stations:
             upsert_stations_bulk(conn, stations)
+            if turso:
+                turso.upsert_stations_bulk(stations)
             log.info("Refreshed station list: %d stations", len(stations))
     except Exception:
         log.exception("Station refresh failed")
@@ -65,11 +82,17 @@ def main() -> None:
     conn = init_db()
     client = FuelFinderClient()
 
-    try:
-        poll_once(client, conn)
+    turso: TursoDB | None = None
+    if settings.turso_url and settings.turso_token:
+        turso = TursoDB()
+        turso.init_schema()
+        log.info("Turso remote DB connected")
 
-        schedule.every(settings.poll_interval_minutes).minutes.do(poll_once, client, conn)
-        schedule.every(7).days.do(refresh_stations, client, conn)
+    try:
+        poll_once(client, conn, turso)
+
+        schedule.every(settings.poll_interval_minutes).minutes.do(poll_once, client, conn, turso)
+        schedule.every(7).days.do(refresh_stations, client, conn, turso)
 
         log.info("Scheduler running — next poll in %d minutes", settings.poll_interval_minutes)
         while True:
@@ -80,6 +103,8 @@ def main() -> None:
     finally:
         client.close()
         conn.close()
+        if turso:
+            turso.close()
 
 
 if __name__ == "__main__":

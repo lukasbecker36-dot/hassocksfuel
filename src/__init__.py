@@ -66,6 +66,12 @@ class Settings:
             "DB_PATH", str(PROJECT_ROOT / "data" / "fuel_prices.db")
         )
     )
+    turso_url: str = field(
+        default_factory=lambda: os.environ.get("TURSO_DATABASE_URL", "")
+    )
+    turso_token: str = field(
+        default_factory=lambda: os.environ.get("TURSO_AUTH_TOKEN", "")
+    )
 
 
 settings = Settings()

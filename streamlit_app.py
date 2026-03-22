@@ -1,46 +1,97 @@
 from __future__ import annotations
 
-import sqlite3
+import os
 from pathlib import Path
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
-from src.analysis import (
-    brand_comparison,
-    price_change_patterns,
-    price_history,
-    spread_analysis,
-    station_ranking,
-)
-from src.db import get_latest_prices, init_db
-
-st.set_page_config(page_title="Hassocks Fuel Prices", page_icon="⛽", layout="wide")
-st.title("⛽ Hassocks Fuel Price Tracker")
+st.set_page_config(page_title="Hassocks Fuel Prices", page_icon="\u26fd", layout="wide")
+st.title("\u26fd Hassocks Fuel Price Tracker")
 st.caption("Diesel and unleaded prices within 5 miles of Hassocks, West Sussex")
 
-DB_PATH = str(Path(__file__).resolve().parent / "data" / "fuel_prices.db")
+
+# ---- Data source: Turso (cloud) or local SQLite ----
+
+def _use_turso() -> bool:
+    """Use Turso if credentials are available (Streamlit Cloud or local .env)."""
+    # Streamlit Cloud secrets
+    if hasattr(st, "secrets"):
+        try:
+            _ = st.secrets["TURSO_DATABASE_URL"]
+            return True
+        except (KeyError, FileNotFoundError):
+            pass
+    # Local .env
+    return bool(os.environ.get("TURSO_DATABASE_URL"))
 
 
-@st.cache_resource
-def get_conn() -> sqlite3.Connection:
-    return init_db(DB_PATH)
+if _use_turso():
+    from src.turso_db import TursoDB
 
+    @st.cache_resource
+    def get_turso() -> TursoDB:
+        # Prefer st.secrets, fall back to env vars
+        try:
+            url = st.secrets["TURSO_DATABASE_URL"]
+            token = st.secrets["TURSO_AUTH_TOKEN"]
+        except (KeyError, FileNotFoundError):
+            url = os.environ["TURSO_DATABASE_URL"]
+            token = os.environ["TURSO_AUTH_TOKEN"]
+        return TursoDB(url=url, token=token)
 
-conn = get_conn()
+    turso = get_turso()
+
+    def get_latest_prices() -> pd.DataFrame:
+        return turso.get_latest_prices()
+
+    def get_price_history(fuel_type: str, days: int) -> pd.DataFrame:
+        from datetime import datetime, timedelta, timezone
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        return turso.get_price_history(fuel_type=fuel_type, since=since)
+
+else:
+    import sqlite3
+    from src.db import get_latest_prices as _get_latest, get_price_history as _get_history, init_db
+
+    DB_PATH = str(Path(__file__).resolve().parent / "data" / "fuel_prices.db")
+
+    @st.cache_resource
+    def get_conn() -> sqlite3.Connection:
+        return init_db(DB_PATH)
+
+    _conn = get_conn()
+
+    def get_latest_prices() -> pd.DataFrame:
+        return _get_latest(_conn)
+
+    def get_price_history(fuel_type: str, days: int) -> pd.DataFrame:
+        from datetime import datetime, timedelta, timezone
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        return _get_history(_conn, fuel_type=fuel_type, since=since)
+
 
 # ---- Sidebar filters ----
-fuel_type = st.sidebar.selectbox("Fuel type", ["B7", "E10"], format_func=lambda x: {"B7": "Diesel (B7)", "E10": "Unleaded (E10)"}[x])
+fuel_type = st.sidebar.selectbox(
+    "Fuel type", ["B7", "E10"],
+    format_func=lambda x: {"B7": "Diesel (B7)", "E10": "Unleaded (E10)"}[x],
+)
 days = st.sidebar.slider("Days of history", 1, 90, 30)
 
-if st.sidebar.button("🔄 Refresh data"):
+if st.sidebar.button("\U0001f504 Refresh data"):
     st.cache_resource.clear()
     st.rerun()
 
 # ---- Current prices ----
 st.header("Current Prices")
-latest = get_latest_prices(conn)
+latest = get_latest_prices()
+
+# Ensure numeric types
+if not latest.empty:
+    latest["price_ppl"] = pd.to_numeric(latest["price_ppl"], errors="coerce")
+    latest["distance_miles"] = pd.to_numeric(latest["distance_miles"], errors="coerce")
+
 if latest.empty:
     st.info("No price data yet. Run the poller first: `python -m src.poller`")
     st.stop()
@@ -55,10 +106,10 @@ for ft in ["B7", "E10"]:
     cheapest = ft_data["price_ppl"].min()
     most_expensive = ft_data["price_ppl"].max()
 
-    def highlight_price(val):
-        if val == cheapest:
+    def highlight_price(val, _lo=cheapest, _hi=most_expensive):
+        if val == _lo:
             return "background-color: #c6efce; color: #006100"
-        if val == most_expensive:
+        if val == _hi:
             return "background-color: #ffc7ce; color: #9c0006"
         return ""
 
@@ -76,8 +127,10 @@ for ft in ["B7", "E10"]:
 
 # ---- Price history ----
 st.header("Price History")
-hist = price_history(conn, fuel_type=fuel_type, days=days)
+hist = get_price_history(fuel_type=fuel_type, days=days)
 if not hist.empty:
+    hist["price_ppl"] = pd.to_numeric(hist["price_ppl"], errors="coerce")
+    hist["price_updated_at"] = pd.to_datetime(hist["price_updated_at"])
     chart = (
         alt.Chart(hist)
         .mark_line(point=True)
@@ -96,8 +149,15 @@ else:
 
 # ---- Station ranking ----
 st.header("Station Ranking")
-ranking = station_ranking(conn, fuel_type=fuel_type, days=days)
-if not ranking.empty:
+if not hist.empty:
+    ranking = (
+        hist.groupby(["name", "brand"])["price_ppl"]
+        .agg(["mean", "min", "max"])
+        .reset_index()
+        .rename(columns={"mean": "avg_price_ppl", "min": "min_price_ppl", "max": "max_price_ppl"})
+        .sort_values("avg_price_ppl")
+    )
+    ranking["rank"] = range(1, len(ranking) + 1)
     chart = (
         alt.Chart(ranking)
         .mark_bar()
@@ -113,8 +173,16 @@ if not ranking.empty:
 
 # ---- Spread analysis ----
 st.header("Price Spread Over Time")
-spread = spread_analysis(conn, fuel_type=fuel_type, days=days)
-if not spread.empty:
+if not hist.empty:
+    spread = (
+        hist.groupby(hist["price_updated_at"].dt.date)["price_ppl"]
+        .agg(["min", "max", "count"])
+        .reset_index()
+        .rename(columns={"price_updated_at": "date", "min": "min_price", "max": "max_price", "count": "n_stations"})
+    )
+    spread["spread"] = spread["max_price"] - spread["min_price"]
+    spread["date"] = pd.to_datetime(spread["date"])
+
     area_data = spread.melt(
         id_vars=["date", "n_stations"],
         value_vars=["min_price", "max_price"],
@@ -150,8 +218,17 @@ if not spread.empty:
 
 # ---- Brand comparison ----
 st.header("Brand Comparison")
-brands = brand_comparison(conn, fuel_type=fuel_type, days=days)
-if not brands.empty:
+if not hist.empty:
+    brands = (
+        hist.groupby(hist["brand"].fillna("Independent"))["price_ppl"]
+        .agg(["mean", "count"])
+        .reset_index()
+        .rename(columns={"brand": "brand", "mean": "avg_price_ppl", "count": "n_observations"})
+        .sort_values("avg_price_ppl")
+    )
+    cheapest_brand = brands["avg_price_ppl"].min()
+    brands["premium_vs_cheapest"] = (brands["avg_price_ppl"] - cheapest_brand).round(1)
+
     chart = (
         alt.Chart(brands)
         .mark_bar()
@@ -159,7 +236,7 @@ if not brands.empty:
             x=alt.X("avg_price_ppl:Q", title="Avg Price (ppl)", scale=alt.Scale(zero=False)),
             y=alt.Y("brand:N", title="Brand", sort="x"),
             color=alt.value("#4c78a8"),
-            tooltip=["brand", "avg_price_ppl", "n_stations", "premium_vs_cheapest"],
+            tooltip=["brand", "avg_price_ppl", "n_observations", "premium_vs_cheapest"],
         )
         .properties(height=max(150, len(brands) * 35))
     )
@@ -167,19 +244,34 @@ if not brands.empty:
 
 # ---- Price change patterns ----
 st.header("Price Change Patterns")
-changes = price_change_patterns(conn, fuel_type=fuel_type, days=days)
-if not changes.empty:
-    st.dataframe(
-        changes.rename(columns={
-            "name": "Station",
-            "price_updated_at": "Changed At",
-            "prev_price": "Old Price",
-            "price_ppl": "New Price",
-            "delta_ppl": "Change (ppl)",
-            "hours_after_leader": "Hours After Leader",
-        }),
-        use_container_width=True,
-        hide_index=True,
-    )
-else:
-    st.info("No price changes detected in this period.")
+if not hist.empty:
+    hist_sorted = hist.sort_values(["station_id", "price_updated_at"])
+    hist_sorted["prev_price"] = hist_sorted.groupby("station_id")["price_ppl"].shift(1)
+    changes = hist_sorted[hist_sorted["price_ppl"] != hist_sorted["prev_price"]].dropna(subset=["prev_price"]).copy()
+
+    if not changes.empty:
+        changes["delta_ppl"] = changes["price_ppl"] - changes["prev_price"]
+        changes["date"] = changes["price_updated_at"].dt.date
+        daily_first = changes.groupby("date")["price_updated_at"].min().reset_index()
+        daily_first.columns = ["date", "leader_time"]
+        changes = changes.merge(daily_first, on="date", how="left")
+        changes["hours_after_leader"] = (
+            (changes["price_updated_at"] - changes["leader_time"]).dt.total_seconds() / 3600
+        ).round(1)
+
+        st.dataframe(
+            changes[["name", "price_updated_at", "prev_price", "price_ppl", "delta_ppl", "hours_after_leader"]].rename(
+                columns={
+                    "name": "Station",
+                    "price_updated_at": "Changed At",
+                    "prev_price": "Old Price",
+                    "price_ppl": "New Price",
+                    "delta_ppl": "Change (ppl)",
+                    "hours_after_leader": "Hours After Leader",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No price changes detected in this period.")
