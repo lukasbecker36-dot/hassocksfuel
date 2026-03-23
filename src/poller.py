@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from datetime import datetime, timezone, timedelta
 
 import schedule
 
@@ -48,6 +49,24 @@ def poll_once(
 
     if turso and records:
         turso.insert_prices_bulk(records)
+
+    # Flag stations with stale prices (not updated in over 2 days)
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+    station_names = {s.station_id: s.name for s in stations}
+    for r in records:
+        try:
+            updated = datetime.fromisoformat(r.price_updated_at.replace("Z", "+00:00"))
+            if updated < stale_cutoff:
+                log.warning(
+                    "Stale price: %s (%s) %s %.1fp last updated %s",
+                    station_names.get(r.station_id, r.station_id),
+                    r.station_id,
+                    r.fuel_type,
+                    r.price_ppl,
+                    r.price_updated_at,
+                )
+        except (ValueError, TypeError):
+            pass
 
     log.info(
         "Poll complete: %d stations, %d price records fetched, %d new prices stored",
