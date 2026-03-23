@@ -23,34 +23,38 @@ def poll_once(
     conn: sqlite3.Connection,
     turso: TursoDB | None = None,
 ) -> None:
-    try:
-        stations = get_tracked_stations(conn)
-        if not stations:
-            log.info("No stations tracked yet, discovering nearby stations...")
-            stations = client.fetch_stations_near_hassocks()
-            if not stations:
-                log.warning("No stations found within %.1f miles", settings.radius_miles)
-                return
+    stations = get_tracked_stations(conn)
+    if not stations and turso:
+        log.info("Local DB empty, checking Turso for tracked stations...")
+        stations = turso.get_tracked_stations()
+        if stations:
             upsert_stations_bulk(conn, stations)
-            if turso:
-                turso.upsert_stations_bulk(stations)
-            log.info("Discovered %d stations", len(stations))
+            log.info("Loaded %d stations from Turso", len(stations))
 
-        station_ids = {s.station_id for s in stations}
-        records = client.fetch_all_prices_bulk(tracked_station_ids=station_ids)
-        new_count = insert_prices_bulk(conn, records)
+    if not stations:
+        log.info("No stations tracked yet, discovering nearby stations...")
+        stations = client.fetch_stations_near_hassocks()
+        if not stations:
+            log.warning("No stations found within %.1f miles", settings.radius_miles)
+            return
+        upsert_stations_bulk(conn, stations)
+        if turso:
+            turso.upsert_stations_bulk(stations)
+        log.info("Discovered %d stations", len(stations))
 
-        if turso and records:
-            turso.insert_prices_bulk(records)
+    station_ids = {s.station_id for s in stations}
+    records = client.fetch_all_prices_bulk(tracked_station_ids=station_ids)
+    new_count = insert_prices_bulk(conn, records)
 
-        log.info(
-            "Poll complete: %d stations, %d price records fetched, %d new prices stored",
-            len(stations),
-            len(records),
-            new_count,
-        )
-    except Exception:
-        log.exception("Poll failed")
+    if turso and records:
+        turso.insert_prices_bulk(records)
+
+    log.info(
+        "Poll complete: %d stations, %d price records fetched, %d new prices stored",
+        len(stations),
+        len(records),
+        new_count,
+    )
 
 
 def refresh_stations(
@@ -88,11 +92,23 @@ def main() -> None:
         turso.init_schema()
         log.info("Turso remote DB connected")
 
+    def _safe_poll() -> None:
+        try:
+            poll_once(client, conn, turso)
+        except Exception:
+            log.exception("Scheduled poll failed")
+
+    def _safe_refresh() -> None:
+        try:
+            refresh_stations(client, conn, turso)
+        except Exception:
+            log.exception("Scheduled station refresh failed")
+
     try:
         poll_once(client, conn, turso)
 
-        schedule.every(settings.poll_interval_minutes).minutes.do(poll_once, client, conn, turso)
-        schedule.every(7).days.do(refresh_stations, client, conn, turso)
+        schedule.every(settings.poll_interval_minutes).minutes.do(_safe_poll)
+        schedule.every(7).days.do(_safe_refresh)
 
         log.info("Scheduler running — next poll in %d minutes", settings.poll_interval_minutes)
         while True:
