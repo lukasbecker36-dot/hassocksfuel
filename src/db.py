@@ -81,9 +81,12 @@ def upsert_stations_bulk(conn: sqlite3.Connection, stations: list[Station]) -> N
 
 def insert_prices_bulk(conn: sqlite3.Connection, records: list[PriceRecord]) -> int:
     cur = conn.executemany(
-        """INSERT OR IGNORE INTO prices
+        """INSERT INTO prices
            (station_id, fuel_type, price_ppl, price_updated_at, fetched_at)
-           VALUES (?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(station_id, fuel_type, price_updated_at)
+           DO UPDATE SET price_ppl = excluded.price_ppl,
+                         fetched_at = excluded.fetched_at""",
         [
             (r.station_id, r.fuel_type, r.price_ppl, r.price_updated_at, r.fetched_at)
             for r in records

@@ -70,20 +70,25 @@ class TursoDB:
         results = self._pipeline([stmt])
         return results[0] if results else {}
 
-    def _execute_many(self, sql: str, rows: list[list]) -> int:
-        """Execute the same statement with multiple parameter sets."""
+    def _execute_many(self, sql: str, rows: list[list], batch_size: int = 80) -> int:
+        """Execute the same statement with multiple parameter sets.
+
+        Sends statements in batches to avoid oversized pipeline requests.
+        """
         if not rows:
             return 0
-        statements = []
-        for args in rows:
-            stmt: dict = {"sql": sql}
-            stmt["args"] = [_turso_arg(a) for a in args]
-            statements.append(stmt)
-        results = self._pipeline(statements)
         affected = 0
-        for r in results:
-            if r.get("type") == "ok":
-                affected += r.get("response", {}).get("result", {}).get("affected_row_count", 0)
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i : i + batch_size]
+            statements = []
+            for args in batch:
+                stmt: dict = {"sql": sql}
+                stmt["args"] = [_turso_arg(a) for a in args]
+                statements.append(stmt)
+            results = self._pipeline(statements)
+            for r in results:
+                if r.get("type") == "ok":
+                    affected += r.get("response", {}).get("result", {}).get("affected_row_count", 0)
         return affected
 
     def _query(self, sql: str, args: list | None = None) -> list[dict]:
@@ -140,9 +145,12 @@ class TursoDB:
     # ---- Prices ----
 
     def insert_prices_bulk(self, records: list[PriceRecord]) -> int:
-        sql = """INSERT OR IGNORE INTO prices
+        sql = """INSERT INTO prices
                  (station_id, fuel_type, price_ppl, price_updated_at, fetched_at)
-                 VALUES (?, ?, ?, ?, ?)"""
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(station_id, fuel_type, price_updated_at)
+                 DO UPDATE SET price_ppl = excluded.price_ppl,
+                               fetched_at = excluded.fetched_at"""
         rows = [
             [r.station_id, r.fuel_type, r.price_ppl, r.price_updated_at, r.fetched_at]
             for r in records
