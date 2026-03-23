@@ -19,7 +19,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install httpx python-dotenv pandas
+        run: pip install httpx python-dotenv pandas schedule
 
       - name: Run poller
         env:
