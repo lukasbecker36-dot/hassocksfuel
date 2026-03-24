@@ -23,8 +23,12 @@ def main() -> None:
 
     turso: TursoDB | None = None
     if settings.turso_url and settings.turso_token:
-        turso = TursoDB()
-        turso.init_schema()
+        try:
+            turso = TursoDB()
+            turso.init_schema()
+        except Exception:
+            log.warning("Turso connection failed, continuing without remote DB", exc_info=True)
+            turso = None
 
     try:
         poll_once(client, conn, turso)
