@@ -27,7 +27,11 @@ def poll_once(
     stations = get_tracked_stations(conn)
     if not stations and turso:
         log.info("Local DB empty, checking Turso for tracked stations...")
-        stations = turso.get_tracked_stations()
+        try:
+            stations = turso.get_tracked_stations()
+        except Exception:
+            log.warning("Failed to fetch stations from Turso", exc_info=True)
+            stations = []
         if stations:
             upsert_stations_bulk(conn, stations)
             log.info("Loaded %d stations from Turso", len(stations))
@@ -40,7 +44,10 @@ def poll_once(
             return
         upsert_stations_bulk(conn, stations)
         if turso:
-            turso.upsert_stations_bulk(stations)
+            try:
+                turso.upsert_stations_bulk(stations)
+            except Exception:
+                log.warning("Failed to sync stations to Turso", exc_info=True)
         log.info("Discovered %d stations", len(stations))
 
     station_ids = {s.station_id for s in stations}
@@ -48,7 +55,10 @@ def poll_once(
     new_count = insert_prices_bulk(conn, records)
 
     if turso and records:
-        turso.insert_prices_bulk(records)
+        try:
+            turso.insert_prices_bulk(records)
+        except Exception:
+            log.warning("Failed to sync prices to Turso", exc_info=True)
 
     # Flag stations with stale prices (not updated in over 2 days)
     stale_cutoff = datetime.now(timezone.utc) - timedelta(days=2)
