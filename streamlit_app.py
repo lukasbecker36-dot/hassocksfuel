@@ -130,7 +130,7 @@ st.header("Price History")
 hist = get_price_history(fuel_type=fuel_type, days=days)
 if not hist.empty:
     hist["price_ppl"] = pd.to_numeric(hist["price_ppl"], errors="coerce")
-    hist["price_updated_at"] = pd.to_datetime(hist["price_updated_at"])
+    hist["price_updated_at"] = pd.to_datetime(hist["price_updated_at"], format="mixed", utc=True)
     chart = (
         alt.Chart(hist)
         .mark_line(point=True)

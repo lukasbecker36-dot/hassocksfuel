@@ -20,6 +20,32 @@ from src.geo import filter_stations_by_radius
 
 log = logging.getLogger(__name__)
 
+
+def _normalize_timestamp(ts: str) -> str:
+    """Convert JS-style timestamps to ISO 8601.
+
+    Input:  'Mon Mar 23 2026 09:49:38 GMT+0000 (Coordinated Universal Time)'
+    Output: '2026-03-23T09:49:38+00:00'
+    """
+    if not ts or ts.startswith("20"):  # already ISO-ish
+        return ts
+    # Strip the parenthesised timezone name
+    paren = ts.find("(")
+    if paren != -1:
+        ts = ts[:paren].strip()
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(ts)
+        return dt.isoformat()
+    except Exception:
+        pass
+    # Fallback: try common JS date format
+    try:
+        dt = datetime.strptime(ts, "%a %b %d %Y %H:%M:%S GMT%z")
+        return dt.isoformat()
+    except Exception:
+        return ts
+
 PRESIGNED_URL_ENDPOINT = (
     "https://www.fuel-finder.service.gov.uk/internal/v1.0.2/csv/generate-presigned-url"
 )
@@ -185,10 +211,8 @@ def _extract_prices_from_row(
             ppl = float(price_val)
         except (ValueError, TypeError):
             continue
-        updated_at = (
-            row.get(f"{_P}price_change_effective_timestamp.{csv_fuel}", "").strip()
-            or fetched_at
-        )
+        raw_ts = row.get(f"{_P}price_change_effective_timestamp.{csv_fuel}", "").strip()
+        updated_at = _normalize_timestamp(raw_ts) if raw_ts else fetched_at
         records.append(PriceRecord(
             station_id=station_id,
             fuel_type=canonical,
