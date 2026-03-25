@@ -19,14 +19,10 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install httpx python-dotenv pandas schedule
+        run: pip install httpx python-dotenv pandas cryptography
 
-      - name: Run poller
+      - name: Run CSV poller
         env:
-          FUEL_FINDER_CLIENT_ID: ${{ secrets.FUEL_FINDER_CLIENT_ID }}
-          FUEL_FINDER_CLIENT_SECRET: ${{ secrets.FUEL_FINDER_CLIENT_SECRET }}
-          FUEL_FINDER_TOKEN_URL: ${{ secrets.FUEL_FINDER_TOKEN_URL }}
-          FUEL_FINDER_API_BASE_URL: ${{ secrets.FUEL_FINDER_API_BASE_URL }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: python -m src.poll_once
+        run: python -m src.poll_csv
