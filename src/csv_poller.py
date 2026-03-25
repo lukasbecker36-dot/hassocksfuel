@@ -56,9 +56,17 @@ def _decrypt_response(hex_payload: str, iv_hex: str) -> dict:
     return json.loads(plaintext)
 
 
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.fuel-finder.service.gov.uk/access-latest-fuelprices",
+    "Origin": "https://www.fuel-finder.service.gov.uk",
+}
+
+
 def _get_csv_download_url(client: httpx.Client) -> str:
     """Get the presigned S3 URL for the CSV download."""
-    resp = client.get(PRESIGNED_URL_ENDPOINT)
+    resp = client.get(PRESIGNED_URL_ENDPOINT, headers=_BROWSER_HEADERS)
     resp.raise_for_status()
     body = resp.json()
 
